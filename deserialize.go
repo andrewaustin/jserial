@@ -640,6 +640,7 @@ func (sop *SerializedObjectParser) classDesc() (cls *clazz, err error) {
 }
 
 // parseClassDesc parses a class descriptor.
+//
 //nolint:funlen
 func parseClassDesc(sop *SerializedObjectParser) (x interface{}, err error) {
 	cls := &clazz{}
@@ -1113,13 +1114,9 @@ func listPostProc(fields map[string]interface{}, data []interface{}) (map[string
 		return nil, errors.Errorf("incorrect number of elements: want %d got %d", size, len(data)-1)
 	}
 
-	if size > 1 {
-		fields["value"] = data[1:size]
-	} else {
-		fields["value"] = make([]interface{}, 0)
-	}
+	fields["value"] = data[1:]
 
-	return fields, err
+	return fields, nil
 }
 
 // mapPostProc populates the object value with a map of key/value pairs.
@@ -1191,12 +1188,9 @@ func hashSetPostProc(fields map[string]interface{}, data []interface{}) (map[str
 
 	m := make(map[string]bool)
 
-	if size > 1 {
-		for idx := range data[1:size] {
-			key := data[idx+1]
-			if s, isString := key.(string); isString {
-				m[s] = true
-			}
+	for _, key := range data[1:] {
+		if s, isString := key.(string); isString {
+			m[s] = true
 		}
 	}
 
