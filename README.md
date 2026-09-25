@@ -71,10 +71,26 @@ following types:
 
 
 ## Fuzzing
-* `cd $GOPATH/src`
-* `go get -u github.com/dvyukov/go-fuzz/...`
-* `go-fuzz-build github.com/jkeys089/jserial`
-* `go-fuzz -bin=jserial-fuzz.zip -workdir=github.com/jkeys089/jserial/fuzzdata`
+Fuzzing uses Go's built-in fuzzing support and requires Go 1.18 or newer. The seed
+corpus is the test fixture set plus the corpus committed under `fuzzdata/corpus`.
+
+Run the seed corpus only. This generates no new inputs and is fast enough for CI:
+```sh
+go test -run FuzzParse .
+```
+
+Generate new inputs for a fixed duration:
+```sh
+go test -run '^$' -fuzz FuzzParse -fuzztime=2m .
+```
+
+Omit `-fuzztime` to fuzz until a failure or an interrupt. `go test`'s `-timeout` does
+not apply while fuzzing, so no extra flag is needed for long runs, and `-parallel`
+limits how many cores are used. Progress persists between runs in
+`$(go env GOCACHE)/fuzz`, which `go clean -fuzzcache` clears.
+
+Any failing input is written to `testdata/fuzz/FuzzParse/` and becomes a permanent
+regression seed that plain `go test` replays from then on.
 
 
 ## Contributing
