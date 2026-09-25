@@ -4,7 +4,7 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
-	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -60,18 +60,15 @@ func TestDeserializeLegacyException(t *testing.T) {
 }
 
 func TestDeserializeLegacyHashSet(t *testing.T) {
-	obj, err := ParseSerializedObjectMinimal(legacySerializedObject(t, "hashSet"))
-	if err != nil {
-		t.Fatalf("deserialize legacy HashSet: %v", err)
-	}
-	if len(obj) != 3 {
-		t.Fatalf("unexpected object count: got %d, want 3", len(obj))
+	// The legacy stream contains "foo" and Integer(123). A member that is not
+	// a string cannot be represented in the decoded set, so the parse fails
+	// rather than returning a set that is quietly missing a member.
+	_, err := ParseSerializedObjectMinimal(legacySerializedObject(t, "hashSet"))
+	if err == nil {
+		t.Fatal("expected an error for a non-string set member, got nil")
 	}
 
-	// The legacy stream contains "foo" and Integer(123). HashSet's minimal
-	// representation intentionally contains only string members.
-	expected := map[string]bool{"foo": true}
-	if !reflect.DeepEqual(obj[1], expected) {
-		t.Fatalf("unexpected legacy HashSet: got %#v, want %#v", obj[1], expected)
+	if !strings.Contains(err.Error(), "java.lang.Integer") {
+		t.Fatalf("error should name the Java member type, got: %v", err)
 	}
 }
