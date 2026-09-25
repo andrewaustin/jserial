@@ -651,9 +651,12 @@ func parseClassDesc(sop *SerializedObjectParser) (x interface{}, err error) {
 		return
 	}
 
-	const minClassNameLength = 2
-	if len(cls.name) < minClassNameLength {
-		err = errors.Wrapf(err, "invalid class name: '%s'", cls.name)
+	if cls.name == "" {
+		// A single character class name such as "X" is valid Java, so only an
+		// empty name is rejected here. Note the original check used
+		// errors.Wrapf on a nil err, which returns nil, so it silently
+		// accepted the descriptor and desynced the handle table.
+		err = errors.New("invalid class name: empty")
 
 		return
 	}
@@ -713,13 +716,24 @@ func parseClassDesc(sop *SerializedObjectParser) (x interface{}, err error) {
 }
 
 func parseClass(sop *SerializedObjectParser) (cd interface{}, err error) {
-	if cd, err = sop.classDesc(); err != nil {
+	var cls *clazz
+
+	if cls, err = sop.classDesc(); err != nil {
 		err = errors.Wrap(err, "error parsing class")
 
 		return
 	}
 
-	cd = sop.newHandle(cd)
+	// classDesc returns a nil class for TC_NULL, which is only meaningful in
+	// the superclass position. Here it would hand back a typed nil *clazz,
+	// leaking an unexported type into the caller's result.
+	if cls == nil {
+		err = errors.New("class descriptor is null")
+
+		return
+	}
+
+	cd = sop.newHandle(cls)
 
 	return
 }
@@ -748,6 +762,14 @@ func parseArray(sop *SerializedObjectParser) (arr interface{}, err error) {
 
 	if cls, err = sop.classDesc(); err != nil {
 		err = errors.Wrap(err, "error parsing array class")
+
+		return
+	}
+
+	// A TC_NULL class descriptor used to yield a nil array with a nil error,
+	// indistinguishable from a legitimately null field.
+	if cls == nil {
+		err = errors.New("array class descriptor is null")
 
 		return
 	}
@@ -815,6 +837,14 @@ func parseEnum(sop *SerializedObjectParser) (enum interface{}, err error) {
 
 	if cls, err = sop.classDesc(); err != nil {
 		err = errors.Wrap(err, "error parsing enum class")
+
+		return
+	}
+
+	// Without this a TC_NULL class descriptor yields the bare constant name,
+	// which looks like a perfectly good enum value.
+	if cls == nil {
+		err = errors.New("enum class descriptor is null")
 
 		return
 	}
@@ -1046,6 +1076,15 @@ func parseObject(sop *SerializedObjectParser) (obj interface{}, err error) {
 
 	if cls, err = sop.classDesc(); err != nil {
 		err = errors.Wrap(err, "error reading object class")
+
+		return
+	}
+
+	// A TC_NULL class descriptor used to produce an object with no fields,
+	// which the minimal representation renders as {} -- indistinguishable
+	// from a genuinely empty map.
+	if cls == nil {
+		err = errors.New("object class descriptor is null")
 
 		return
 	}
