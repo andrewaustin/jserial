@@ -8,6 +8,9 @@ import java.io.ObjectInputStream;
 import java.io.ObjectOutput;
 import java.io.ObjectOutputStream;
 import java.io.Serializable;
+import java.lang.reflect.Array;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -16,12 +19,15 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.Date;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Hashtable;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /** Generates the Java object-stream fixtures consumed by the Go tests. */
@@ -47,6 +53,13 @@ public final class GenerateFixtures {
 
         System.out.printf("Wrote %d fixtures to %s%n",
                 fixtures.size(), output.toAbsolutePath());
+
+        Path oracleOutput = output.resolveSibling("oracle_fixtures.json");
+        Map<String, OracleFixture> oracle = generateOracleFixtures();
+        writeOracleJson(oracleOutput, oracle);
+
+        System.out.printf("Wrote %d oracle fixtures to %s%n",
+                oracle.size(), oracleOutput.toAbsolutePath());
     }
 
     static byte[] shortPattern() {
@@ -273,6 +286,337 @@ public final class GenerateFixtures {
                 json.toString().getBytes(StandardCharsets.UTF_8));
     }
 
+
+    // ------------------------------------------------------------------ //
+    // -- Oracle fixtures ----------------------------------------------- //
+    // ------------------------------------------------------------------ //
+
+    /**
+     * Pairs a serialized stream with the leaf values Java itself recovers
+     * from that stream. The Go side asserts it recovers the same multiset of
+     * leaves, which catches values that decode to the wrong thing without any
+     * error being reported.
+     *
+     * <p>Leaves are compared as an order independent multiset rather than by
+     * path, so this deliberately says nothing about structure. It checks value
+     * fidelity only, which is where a port is most likely to go wrong.
+     */
+    private static final class OracleFixture {
+        private final byte[] bytes;
+        private final List<String> leaves;
+
+        OracleFixture(byte[] bytes, List<String> leaves) {
+            this.bytes = bytes;
+            this.leaves = leaves;
+        }
+    }
+
+    /** Builds a string holding the single given code point. */
+    private static String codePoint(int value) {
+        return new String(new int[] {value}, 0, 1);
+    }
+
+    private static Map<String, Object> oracleValues() {
+        Map<String, Object> values = new LinkedHashMap<String, Object>();
+
+        // Java writes strings as modified UTF-8: NUL becomes two bytes and a
+        // supplementary character becomes a CESU-8 surrogate pair, so neither
+        // matches standard UTF-8 on the wire.
+        values.put("strAscii", "hello");
+        values.put("strLatin1", "caf\u00e9");
+        values.put("strBmp3Byte", "\u1234");
+        values.put("strEmpty", "");
+        values.put("strNul", "a" + (char) 0 + "b");
+        values.put("strEmoji", codePoint(0x1F600));
+        values.put("strEmojiMixed", "hi " + codePoint(0x1F600) + " there");
+        values.put("strLoneHighSurrogate", "x" + (char) 0xD83D + "y");
+        values.put("strArrayUnicode",
+                new String[] {codePoint(0x1F600), "plain", ""});
+
+        // char is a UTF-16 code unit, so it can hold half a surrogate pair.
+        values.put("charBmp", Character.valueOf('\u1234'));
+        values.put("charSurrogate", Character.valueOf((char) 0xD83D));
+        values.put("charNul", Character.valueOf((char) 0));
+
+        // Dates past 2262 overflow a nanosecond representation.
+        values.put("dateEpoch", new Date(0L));
+        values.put("datePre1970", new Date(-86_400_000L));
+        values.put("dateBeyond2262", new Date(9_300_000_000_000L));
+
+        // Float and double edge cases, compared as raw bits.
+        values.put("doubleNaN", Double.valueOf(Double.NaN));
+        values.put("doublePosInf", Double.valueOf(Double.POSITIVE_INFINITY));
+        values.put("doubleNegZero", Double.valueOf(-0.0d));
+        values.put("floatNaN", Float.valueOf(Float.NaN));
+        values.put("intMin", Integer.valueOf(Integer.MIN_VALUE));
+        values.put("longMin", Long.valueOf(Long.MIN_VALUE));
+
+        // Map keys that are not strings, and a set of mixed member types.
+        Map<Object, Object> intKeys = new HashMap<Object, Object>();
+        intKeys.put(Integer.valueOf(1), "one");
+        intKeys.put(Integer.valueOf(2), "two");
+        values.put("hashMapIntKeys", intKeys);
+
+        HashSet<Object> mixedSet = new HashSet<Object>();
+        mixedSet.add("foo");
+        mixedSet.add(Integer.valueOf(123));
+        values.put("hashSetMixed", mixedSet);
+
+        // A reference cycle. Java restores the identity cycle, so a parser
+        // that registers object handles too late loses the back reference.
+        OracleNode first = new OracleNode("a");
+        OracleNode second = new OracleNode("b");
+        first.next = second;
+        second.next = first;
+        values.put("cycle", first);
+
+        // The same object referenced twice, which is a shared substructure
+        // rather than a cycle.
+        OracleNode shared = new OracleNode("shared");
+        values.put("sharedRef", new OracleNode[] {shared, shared});
+
+        return values;
+    }
+
+    private static Map<String, OracleFixture> generateOracleFixtures()
+            throws IOException, ClassNotFoundException {
+        Map<String, OracleFixture> fixtures =
+                new LinkedHashMap<String, OracleFixture>();
+
+        for (Map.Entry<String, Object> entry : oracleValues().entrySet()) {
+            final Object value = entry.getValue();
+            byte[] bytes = serializeBare(new FixtureWriter() {
+                @Override
+                public void write(ObjectOutputStream out) throws IOException {
+                    out.writeObject(value);
+                }
+            });
+
+            // Read the stream back through Java so the expected leaves come
+            // from ObjectInputStream, not from the in memory value.
+            Object restored;
+            try (ObjectInputStream in = new ObjectInputStream(
+                    new ByteArrayInputStream(bytes))) {
+                restored = in.readObject();
+            }
+
+            fixtures.put(entry.getKey(),
+                    new OracleFixture(bytes, oracleLeaves(restored)));
+        }
+
+        return fixtures;
+    }
+
+    /** Serializes a single object with no surrounding sentinel objects. */
+    private static byte[] serializeBare(FixtureWriter writer)
+            throws IOException {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (ObjectOutputStream out = new ObjectOutputStream(bytes)) {
+            writer.write(out);
+        }
+        return bytes.toByteArray();
+    }
+
+    /** Returns every leaf value reachable from root, sorted. */
+    private static List<String> oracleLeaves(Object root) {
+        List<String> leaves = new ArrayList<String>();
+        collectLeaves(root, leaves, new IdentityHashMap<Object, Boolean>());
+        Collections.sort(leaves);
+
+        return leaves;
+    }
+
+    private static void collectLeaves(Object value, List<String> leaves,
+            Map<Object, Boolean> seen) {
+        if (value == null) {
+            leaves.add("null:");
+
+            return;
+        }
+
+        if (value instanceof String) {
+            leaves.add("string:" + describeCodePoints((String) value));
+
+            return;
+        }
+
+        if (value instanceof Character) {
+            // jserial represents a Java char as a one character string
+            leaves.add("string:" + describeCodePoints(
+                    String.valueOf(((Character) value).charValue())));
+
+            return;
+        }
+
+        if (value instanceof Boolean) {
+            leaves.add("boolean:" + value);
+
+            return;
+        }
+
+        if (value instanceof Byte) {
+            leaves.add("byte:" + value);
+
+            return;
+        }
+
+        if (value instanceof Short) {
+            leaves.add("short:" + value);
+
+            return;
+        }
+
+        if (value instanceof Integer) {
+            leaves.add("int:" + value);
+
+            return;
+        }
+
+        if (value instanceof Long) {
+            leaves.add("long:" + value);
+
+            return;
+        }
+
+        if (value instanceof Float) {
+            leaves.add(String.format("float:0x%08x",
+                    Integer.valueOf(Float.floatToRawIntBits(
+                            ((Float) value).floatValue()))));
+
+            return;
+        }
+
+        if (value instanceof Double) {
+            leaves.add(String.format("double:0x%016x",
+                    Long.valueOf(Double.doubleToRawLongBits(
+                            ((Double) value).doubleValue()))));
+
+            return;
+        }
+
+        if (value instanceof Date) {
+            leaves.add("date:" + ((Date) value).getTime());
+
+            return;
+        }
+
+        // `seen` holds the current path rather than every object visited, so
+        // shared acyclic substructure is expanded on each visit the same way
+        // jserial expands a repeated reference, while a true cycle is cut.
+        if (seen.put(value, Boolean.TRUE) != null) {
+            return;
+        }
+
+        try {
+            // Map keys are skipped: jserial renders both an object and a map
+            // as a string keyed map, so field names and map keys cannot be
+            // told apart on the Go side. Only values are compared.
+            if (value instanceof Map) {
+                for (Object entry : ((Map<?, ?>) value).entrySet()) {
+                    collectLeaves(((Map.Entry<?, ?>) entry).getValue(),
+                            leaves, seen);
+                }
+
+                return;
+            }
+
+            if (value instanceof Iterable) {
+                for (Object element : (Iterable<?>) value) {
+                    collectLeaves(element, leaves, seen);
+                }
+
+                return;
+            }
+
+            if (value.getClass().isArray()) {
+                int length = Array.getLength(value);
+                for (int i = 0; i < length; i++) {
+                    collectLeaves(Array.get(value, i), leaves, seen);
+                }
+
+                return;
+            }
+
+            collectFieldLeaves(value, leaves, seen);
+        } finally {
+            seen.remove(value);
+        }
+    }
+
+    private static void collectFieldLeaves(Object value, List<String> leaves,
+            Map<Object, Boolean> seen) {
+        for (Class<?> type = value.getClass();
+                type != null && type != Object.class;
+                type = type.getSuperclass()) {
+            for (Field field : type.getDeclaredFields()) {
+                int modifiers = field.getModifiers();
+                if (Modifier.isStatic(modifiers)
+                        || Modifier.isTransient(modifiers)) {
+                    continue;
+                }
+
+                field.setAccessible(true);
+                try {
+                    collectLeaves(field.get(value), leaves, seen);
+                } catch (IllegalAccessException error) {
+                    throw new IllegalStateException(
+                            "unable to read field " + field, error);
+                }
+            }
+        }
+    }
+
+    /** Renders a string as its code points so encoding bugs cannot hide. */
+    private static String describeCodePoints(String value) {
+        StringBuilder rendered = new StringBuilder();
+        for (int i = 0; i < value.length(); ) {
+            int point = value.codePointAt(i);
+            if (rendered.length() > 0) {
+                rendered.append(',');
+            }
+            rendered.append(String.format("U+%04X", Integer.valueOf(point)));
+            i += Character.charCount(point);
+        }
+
+        return rendered.toString();
+    }
+
+    private static void writeOracleJson(Path output,
+            Map<String, OracleFixture> fixtures) throws IOException {
+        Path absoluteOutput = output.toAbsolutePath();
+        Path parent = absoluteOutput.getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
+        }
+
+        StringBuilder json = new StringBuilder();
+        json.append("{\n");
+        int index = 0;
+        for (Map.Entry<String, OracleFixture> fixture : fixtures.entrySet()) {
+            OracleFixture value = fixture.getValue();
+            json.append("  \"").append(fixture.getKey()).append("\": {\n");
+            json.append("    \"bytes\": \"")
+                    .append(Base64.getEncoder().encodeToString(value.bytes))
+                    .append("\",\n");
+            json.append("    \"leaves\": [");
+            for (int leaf = 0; leaf < value.leaves.size(); leaf++) {
+                if (leaf > 0) {
+                    json.append(", ");
+                }
+                json.append('"').append(value.leaves.get(leaf)).append('"');
+            }
+            json.append("]\n  }");
+            if (++index < fixtures.size()) {
+                json.append(',');
+            }
+            json.append('\n');
+        }
+        json.append("}\n");
+
+        Files.write(absoluteOutput,
+                json.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
     private static void verifyRoundTrips(Map<String, byte[]> fixtures)
             throws IOException {
         for (Map.Entry<String, byte[]> fixture : fixtures.entrySet()) {
@@ -380,5 +724,15 @@ class External implements Externalizable {
         data = new byte[length];
         in.readFully(data);
         in.readObject();
+    }
+}
+
+class OracleNode implements Serializable {
+    private static final long serialVersionUID = 0xABCDEFL;
+    String name;
+    OracleNode next;
+
+    OracleNode(String name) {
+        this.name = name;
     }
 }

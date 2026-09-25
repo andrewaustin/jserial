@@ -1,0 +1,102 @@
+{
+  "strAscii": {
+    "bytes": "rO0ABXQABWhlbGxv",
+    "leaves": ["string:U+0068,U+0065,U+006C,U+006C,U+006F"]
+  },
+  "strLatin1": {
+    "bytes": "rO0ABXQABWNhZsOp",
+    "leaves": ["string:U+0063,U+0061,U+0066,U+00E9"]
+  },
+  "strBmp3Byte": {
+    "bytes": "rO0ABXQAA+GItA==",
+    "leaves": ["string:U+1234"]
+  },
+  "strEmpty": {
+    "bytes": "rO0ABXQAAA==",
+    "leaves": ["string:"]
+  },
+  "strNul": {
+    "bytes": "rO0ABXQABGHAgGI=",
+    "leaves": ["string:U+0061,U+0000,U+0062"]
+  },
+  "strEmoji": {
+    "bytes": "rO0ABXQABu2gve24gA==",
+    "leaves": ["string:U+1F600"]
+  },
+  "strEmojiMixed": {
+    "bytes": "rO0ABXQAD2hpIO2gve24gCB0aGVyZQ==",
+    "leaves": ["string:U+0068,U+0069,U+0020,U+1F600,U+0020,U+0074,U+0068,U+0065,U+0072,U+0065"]
+  },
+  "strLoneHighSurrogate": {
+    "bytes": "rO0ABXQABXjtoL15",
+    "leaves": ["string:U+0078,U+D83D,U+0079"]
+  },
+  "strArrayUnicode": {
+    "bytes": "rO0ABXVyABNbTGphdmEubGFuZy5TdHJpbmc7rdJW5+kde0cCAAB4cAAAAAN0AAbtoL3tuIB0AAVwbGFpbnQAAA==",
+    "leaves": ["string:", "string:U+0070,U+006C,U+0061,U+0069,U+006E", "string:U+1F600"]
+  },
+  "charBmp": {
+    "bytes": "rO0ABXNyABNqYXZhLmxhbmcuQ2hhcmFjdGVyNItH2WsaJngCAAFDAAV2YWx1ZXhwEjQ=",
+    "leaves": ["string:U+1234"]
+  },
+  "charSurrogate": {
+    "bytes": "rO0ABXNyABNqYXZhLmxhbmcuQ2hhcmFjdGVyNItH2WsaJngCAAFDAAV2YWx1ZXhw2D0=",
+    "leaves": ["string:U+D83D"]
+  },
+  "charNul": {
+    "bytes": "rO0ABXNyABNqYXZhLmxhbmcuQ2hhcmFjdGVyNItH2WsaJngCAAFDAAV2YWx1ZXhwAAA=",
+    "leaves": ["string:U+0000"]
+  },
+  "dateEpoch": {
+    "bytes": "rO0ABXNyAA5qYXZhLnV0aWwuRGF0ZWhqgQFLWXQZAwAAeHB3CAAAAAAAAAAAeA==",
+    "leaves": ["date:0"]
+  },
+  "datePre1970": {
+    "bytes": "rO0ABXNyAA5qYXZhLnV0aWwuRGF0ZWhqgQFLWXQZAwAAeHB3CP/////62aQAeA==",
+    "leaves": ["date:-86400000"]
+  },
+  "dateBeyond2262": {
+    "bytes": "rO0ABXNyAA5qYXZhLnV0aWwuRGF0ZWhqgQFLWXQZAwAAeHB3CAAACHVTMkgAeA==",
+    "leaves": ["date:9300000000000"]
+  },
+  "doubleNaN": {
+    "bytes": "rO0ABXNyABBqYXZhLmxhbmcuRG91YmxlgLPCSilr+wQCAAFEAAV2YWx1ZXhyABBqYXZhLmxhbmcuTnVtYmVyhqyVHQuU4IsCAAB4cH/4AAAAAAAA",
+    "leaves": ["double:0x7ff8000000000000"]
+  },
+  "doublePosInf": {
+    "bytes": "rO0ABXNyABBqYXZhLmxhbmcuRG91YmxlgLPCSilr+wQCAAFEAAV2YWx1ZXhyABBqYXZhLmxhbmcuTnVtYmVyhqyVHQuU4IsCAAB4cH/wAAAAAAAA",
+    "leaves": ["double:0x7ff0000000000000"]
+  },
+  "doubleNegZero": {
+    "bytes": "rO0ABXNyABBqYXZhLmxhbmcuRG91YmxlgLPCSilr+wQCAAFEAAV2YWx1ZXhyABBqYXZhLmxhbmcuTnVtYmVyhqyVHQuU4IsCAAB4cIAAAAAAAAAA",
+    "leaves": ["double:0x8000000000000000"]
+  },
+  "floatNaN": {
+    "bytes": "rO0ABXNyAA9qYXZhLmxhbmcuRmxvYXTa7cmi2zzw7AIAAUYABXZhbHVleHIAEGphdmEubGFuZy5OdW1iZXKGrJUdC5TgiwIAAHhwf8AAAA==",
+    "leaves": ["float:0x7fc00000"]
+  },
+  "intMin": {
+    "bytes": "rO0ABXNyABFqYXZhLmxhbmcuSW50ZWdlchLioKT3gYc4AgABSQAFdmFsdWV4cgAQamF2YS5sYW5nLk51bWJlcoaslR0LlOCLAgAAeHCAAAAA",
+    "leaves": ["int:-2147483648"]
+  },
+  "longMin": {
+    "bytes": "rO0ABXNyAA5qYXZhLmxhbmcuTG9uZzuL5JDMjyPfAgABSgAFdmFsdWV4cgAQamF2YS5sYW5nLk51bWJlcoaslR0LlOCLAgAAeHCAAAAAAAAAAA==",
+    "leaves": ["long:-9223372036854775808"]
+  },
+  "hashMapIntKeys": {
+    "bytes": "rO0ABXNyABFqYXZhLnV0aWwuSGFzaE1hcAUH2sHDFmDRAwACRgAKbG9hZEZhY3RvckkACXRocmVzaG9sZHhwP0AAAAAAAAx3CAAAABAAAAACc3IAEWphdmEubGFuZy5JbnRlZ2VyEuKgpPeBhzgCAAFJAAV2YWx1ZXhyABBqYXZhLmxhbmcuTnVtYmVyhqyVHQuU4IsCAAB4cAAAAAF0AANvbmVzcQB+AAIAAAACdAADdHdveA==",
+    "leaves": ["string:U+006F,U+006E,U+0065", "string:U+0074,U+0077,U+006F"]
+  },
+  "hashSetMixed": {
+    "bytes": "rO0ABXNyABFqYXZhLnV0aWwuSGFzaFNldLpEhZWWuLc0AwAAeHB3DAAAABA/QAAAAAAAAnQAA2Zvb3NyABFqYXZhLmxhbmcuSW50ZWdlchLioKT3gYc4AgABSQAFdmFsdWV4cgAQamF2YS5sYW5nLk51bWJlcoaslR0LlOCLAgAAeHAAAAB7eA==",
+    "leaves": ["int:123", "string:U+0066,U+006F,U+006F"]
+  },
+  "cycle": {
+    "bytes": "rO0ABXNyAApPcmFjbGVOb2RlAAAAAACrze8CAAJMAARuYW1ldAASTGphdmEvbGFuZy9TdHJpbmc7TAAEbmV4dHQADExPcmFjbGVOb2RlO3hwdAABYXNxAH4AAHQAAWJxAH4AAw==",
+    "leaves": ["string:U+0061", "string:U+0062"]
+  },
+  "sharedRef": {
+    "bytes": "rO0ABXVyAA1bTE9yYWNsZU5vZGU7n3mAbiedWsUCAAB4cAAAAAJzcgAKT3JhY2xlTm9kZQAAAAAAq83vAgACTAAEbmFtZXQAEkxqYXZhL2xhbmcvU3RyaW5nO0wABG5leHR0AAxMT3JhY2xlTm9kZTt4cHQABnNoYXJlZHBxAH4ABQ==",
+    "leaves": ["null:", "null:", "string:U+0073,U+0068,U+0061,U+0072,U+0065,U+0064", "string:U+0073,U+0068,U+0061,U+0072,U+0065,U+0064"]
+  }
+}
