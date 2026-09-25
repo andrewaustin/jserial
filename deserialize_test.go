@@ -371,6 +371,7 @@ func initSerializedObjects() error {
 		"hashTblStr",
 		"enumMap",
 		"arrayList",
+		"stringListMapHolder",
 		"arrayDeque",
 		"hashSet",
 		"date",
@@ -793,6 +794,22 @@ func TestDeserializeArrayList(t *testing.T) {
 	expected := []interface{}{"foo", int32(123)}
 	if !reflect.DeepEqual(obj[1], expected) {
 		t.Fail()
+	}
+}
+
+func TestDeserializeStringListMapHolder(t *testing.T) {
+	obj, err := ParseSerializedObjectMinimal(objs["stringListMapHolder"])
+	if err != nil || len(obj) != 3 {
+		t.Fatalf("unexpected parse result: object count %d, error %v", len(obj), err)
+	}
+	expected := map[string]interface{}{
+		"values": map[string]interface{}{
+			"aa": []interface{}{"cc"},
+			"bb": []interface{}{"dd", "ee"},
+		},
+	}
+	if !reflect.DeepEqual(obj[1], expected) {
+		t.Fatalf("unexpected holder: got %#v, want %#v", obj[1], expected)
 	}
 }
 

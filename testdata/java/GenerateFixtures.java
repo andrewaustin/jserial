@@ -60,6 +60,66 @@ public final class GenerateFixtures {
 
         System.out.printf("Wrote %d oracle fixtures to %s%n",
                 oracle.size(), oracleOutput.toAbsolutePath());
+
+        Path benchmarkOutput = output.resolveSibling("benchmark_fixtures.json");
+        Map<String, byte[]> benchmarkFixtures = generateBenchmarkFixtures();
+        verifyRoundTrips(benchmarkFixtures);
+        writeJson(benchmarkOutput, benchmarkFixtures);
+
+        System.out.printf("Wrote %d benchmark fixtures to %s%n",
+                benchmarkFixtures.size(), benchmarkOutput.toAbsolutePath());
+    }
+
+    private static Map<String, byte[]> generateBenchmarkFixtures()
+            throws IOException {
+        Map<String, byte[]> fixtures =
+                new LinkedHashMap<String, byte[]>();
+
+        addBenchmarkFixture(fixtures, "empty", 0, 0);
+        addBenchmarkFixture(fixtures, "single", 1, 1);
+        addBenchmarkFixture(fixtures, "medium", 8, 2);
+        addBenchmarkFixture(fixtures, "large", 64, 4);
+
+        return fixtures;
+    }
+
+    private static void addBenchmarkFixture(Map<String, byte[]> fixtures,
+            String name, int keyCount, int valuesPerKey) throws IOException {
+        StringListMapHolder value = benchmarkHolder(keyCount, valuesPerKey);
+        fixtures.put(name, serializeBare(out -> out.writeObject(value)));
+    }
+
+    private static StringListMapHolder benchmarkHolder(int keyCount,
+            int valuesPerKey) {
+        StringListMapHolder holder = new StringListMapHolder();
+        List<String> sharedValues = new ArrayList<String>();
+
+        for (int value = 0; value < valuesPerKey; value++) {
+            int length = value % 2 == 0 ? 39 : 48;
+            sharedValues.add(fixedToken('v', value, length));
+        }
+
+        for (int key = 0; key < keyCount; key++) {
+            String mapKey = fixedToken('k', key, 36);
+            for (String value : sharedValues) {
+                holder.add(mapKey, value);
+            }
+        }
+
+        return holder;
+    }
+
+    private static String fixedToken(char kind, int index, int length) {
+        String seed = String.format("%c%04d", Character.valueOf(kind),
+                Integer.valueOf(index));
+        StringBuilder value = new StringBuilder(seed);
+        char padding = (char) ('a' + index % 26);
+
+        while (value.length() < length) {
+            value.append(padding);
+        }
+
+        return value.substring(0, length);
     }
 
     static byte[] shortPattern() {
@@ -205,6 +265,14 @@ public final class GenerateFixtures {
             ArrayList<Object> value = new ArrayList<Object>();
             value.add("foo");
             value.add(Integer.valueOf(123));
+            out.writeObject(value);
+        });
+
+        add(fixtures, "stringListMapHolder", out -> {
+            StringListMapHolder value = new StringListMapHolder();
+            value.add("aa", "cc");
+            value.add("bb", "dd");
+            value.add("bb", "ee");
             out.writeObject(value);
         });
 
@@ -677,6 +745,18 @@ class ArrayFields implements Serializable {
     int[] ia;
     int[][] iaa;
     String[] sa;
+}
+
+class StringListMapHolder implements Serializable {
+    private static final long serialVersionUID = 1L;
+
+    private final Map<String, List<String>> values =
+            new HashMap<String, List<String>>();
+
+    void add(String key, String value) {
+        values.computeIfAbsent(key, ignored -> new ArrayList<String>())
+                .add(value);
+    }
 }
 
 enum SomeEnum {
