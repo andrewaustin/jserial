@@ -2,7 +2,10 @@ package jserial
 
 import (
 	"bytes"
+	_ "embed"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -11,6 +14,135 @@ import (
 
 // sink keeps the compiler from eliminating parse results we do not inspect.
 var sink []interface{}
+
+//go:embed testdata/benchmark_fixtures.json
+var stringListMapBenchmarkFixturesJSON []byte
+
+type stringListMapBenchmarkCase struct {
+	name         string
+	keyCount     int
+	valuesPerKey int
+}
+
+var stringListMapBenchmarkCases = []stringListMapBenchmarkCase{
+	{name: "empty", keyCount: 0, valuesPerKey: 0},
+	{name: "single", keyCount: 1, valuesPerKey: 1},
+	{name: "medium", keyCount: 8, valuesPerKey: 2},
+	{name: "large", keyCount: 64, valuesPerKey: 4},
+}
+
+func loadStringListMapBenchmarkFixtures(tb testing.TB) map[string][]byte {
+	tb.Helper()
+
+	var encoded map[string]string
+	if err := json.Unmarshal(stringListMapBenchmarkFixturesJSON, &encoded); err != nil {
+		tb.Fatalf("unmarshal string-list map benchmark fixtures: %v", err)
+	}
+	if len(encoded) != len(stringListMapBenchmarkCases) {
+		tb.Fatalf("unexpected benchmark fixture count: got %d, want %d",
+			len(encoded), len(stringListMapBenchmarkCases))
+	}
+
+	fixtures := make(map[string][]byte, len(encoded))
+	for _, testCase := range stringListMapBenchmarkCases {
+		value, exists := encoded[testCase.name]
+		if !exists {
+			tb.Fatalf("benchmark fixture %q does not exist", testCase.name)
+		}
+
+		decoded, err := base64.StdEncoding.Strict().DecodeString(value)
+		if err != nil {
+			tb.Fatalf("decode benchmark fixture %q: %v", testCase.name, err)
+		}
+		fixtures[testCase.name] = decoded
+	}
+
+	return fixtures
+}
+
+// BenchmarkParseStringListMapMinimal measures the fully buffered minimal parse
+// used for a serializable holder containing HashMap<String, ArrayList<String>>.
+func BenchmarkParseStringListMapMinimal(b *testing.B) {
+	fixtures := loadStringListMapBenchmarkFixtures(b)
+
+	for _, testCase := range stringListMapBenchmarkCases {
+		data := fixtures[testCase.name]
+		valueCount := testCase.keyCount * testCase.valuesPerKey
+		name := fmt.Sprintf("keys=%d/values=%d", testCase.keyCount, valueCount)
+
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(data)))
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				content, err := ParseSerializedObjectMinimal(data)
+				if err != nil {
+					b.Fatalf("parse benchmark fixture %q: %v", testCase.name, err)
+				}
+				sink = content
+			}
+		})
+	}
+}
+
+func TestStringListMapBenchmarkFixturesAreValid(t *testing.T) {
+	fixtures := loadStringListMapBenchmarkFixtures(t)
+
+	for _, testCase := range stringListMapBenchmarkCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			content, err := ParseSerializedObjectMinimal(fixtures[testCase.name])
+			if err != nil {
+				t.Fatalf("parse fixture: %v", err)
+			}
+			if len(content) != 1 {
+				t.Fatalf("unexpected top-level object count: got %d, want 1", len(content))
+			}
+
+			holder, ok := content[0].(map[string]interface{})
+			if !ok || len(holder) != 1 {
+				t.Fatalf("unexpected holder: %#v", content[0])
+			}
+			entries, ok := holder["values"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("unexpected values field: %#v", holder["values"])
+			}
+			if len(entries) != testCase.keyCount {
+				t.Fatalf("unexpected key count: got %d, want %d", len(entries), testCase.keyCount)
+			}
+
+			valueCount := 0
+			for key, rawValues := range entries {
+				if len(key) != 36 {
+					t.Fatalf("unexpected key length: got %d, want 36", len(key))
+				}
+				values, ok := rawValues.([]interface{})
+				if !ok || len(values) != testCase.valuesPerKey {
+					t.Fatalf("unexpected values for key %q: %#v", key, rawValues)
+				}
+				for index, rawValue := range values {
+					value, ok := rawValue.(string)
+					if !ok {
+						t.Fatalf("unexpected value type for key %q: %T", key, rawValue)
+					}
+					wantLength := 39
+					if index%2 == 1 {
+						wantLength = 48
+					}
+					if len(value) != wantLength {
+						t.Fatalf("unexpected value length: got %d, want %d", len(value), wantLength)
+					}
+				}
+				valueCount += len(values)
+			}
+
+			wantValueCount := testCase.keyCount * testCase.valuesPerKey
+			if valueCount != wantValueCount {
+				t.Fatalf("unexpected value count: got %d, want %d", valueCount, wantValueCount)
+			}
+		})
+	}
+}
 
 // arraySizes is the element-count sweep used by the array benchmarks. Java
 // payloads in the wild range from a handful of elements to multi-megabyte
@@ -183,8 +315,38 @@ func newRepeatParser() *SerializedObjectParser {
 // BenchmarkParseMinimal measures the primary entry point against every
 // embedded fixture. These streams are small, so this mostly captures
 // per-object overhead rather than throughput.
-func BenchmarkParseMinimal(b *testing.B) {
+// partitionFixtures splits the fixtures by whether they currently parse.
+// Some exist to pin a rejection -- hashMapObj holds a non-string map key, for
+// example -- so running them through a success path benchmark would only
+// measure b.Fatalf. Partitioning by probe rather than by a hard coded list
+// means this cannot drift as the parser's contract changes.
+func partitionFixtures(b *testing.B) (accepted, rejected []string) {
+	b.Helper()
+
 	for _, name := range fixtureNames() {
+		if _, err := ParseSerializedObjectMinimal(fixture(b, name)); err != nil {
+			rejected = append(rejected, name)
+
+			continue
+		}
+
+		accepted = append(accepted, name)
+	}
+
+	return accepted, rejected
+}
+
+func BenchmarkParseMinimal(b *testing.B) {
+	accepted, rejected := partitionFixtures(b)
+
+	// Say what was left out, so an excluded fixture is never mistaken for one
+	// that was measured. BenchmarkParseRejected covers these.
+	if len(rejected) > 0 {
+		b.Logf("excluded %d fixture(s) that the parser rejects: %s",
+			len(rejected), strings.Join(rejected, ", "))
+	}
+
+	for _, name := range accepted {
 		data := fixture(b, name)
 
 		b.Run(name, func(b *testing.B) {
@@ -198,6 +360,33 @@ func BenchmarkParseMinimal(b *testing.B) {
 				}
 
 				sink = content
+			}
+		})
+	}
+}
+
+// BenchmarkParseRejected measures the error path for fixtures the parser
+// refuses. Rejection costs real work -- the stream is parsed up to the point
+// of failure and the error is wrapped at every frame on the way out -- so it
+// is worth tracking separately rather than skipping.
+func BenchmarkParseRejected(b *testing.B) {
+	_, rejected := partitionFixtures(b)
+
+	if len(rejected) == 0 {
+		b.Skip("no fixture is currently rejected")
+	}
+
+	for _, name := range rejected {
+		data := fixture(b, name)
+
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(data)))
+
+			for i := 0; i < b.N; i++ {
+				if _, err := ParseSerializedObjectMinimal(data); err == nil {
+					b.Fatalf("fixture %q was expected to be rejected", name)
+				}
 			}
 		})
 	}
