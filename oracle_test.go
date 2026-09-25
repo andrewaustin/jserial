@@ -33,20 +33,59 @@ type oracleFixture struct {
 	Leaves []string `json:"leaves"`
 }
 
-// knownBroken lists fixtures where jserial is currently known to disagree
-// with Java. Each entry is pinned: the test fails if a listed fixture starts
-// matching, so fixing a bug forces its entry to be removed here.
-var knownBroken = map[string]string{
-	"strNul":               "readString does not decode Java modified UTF-8, so NUL arrives as the raw bytes C0 80",
-	"strEmoji":             "readString does not decode CESU-8, so a supplementary character arrives as two raw 3 byte surrogates",
-	"strEmojiMixed":        "same CESU-8 decoding gap as strEmoji",
-	"strLoneHighSurrogate": "same CESU-8 decoding gap as strEmoji",
-	"strArrayUnicode":      "array member hits the same CESU-8 decoding gap as strEmoji",
-	"charSurrogate":        "a char holding half a surrogate pair is converted with string(rune(...)), which yields U+FFFD",
-	"dateBeyond2262":       "datePostProc multiplies milliseconds by time.Millisecond, overflowing int64 past 2262",
-	"hashMapIntKeys":       "mapPostProc silently drops entries whose key is not a string",
-	"hashSetMixed":         "hashSetPostProc silently drops members that are not strings",
-	"cycle":                "parseObject fills its object handle only after reading fields, so a back reference into the object being built resolves to nil",
+// knownDivergence describes a fixture where jserial does not agree with Java.
+//
+// The two kinds are kept distinct on purpose. A fixture with wantError is
+// expected to be *rejected*, and must be rejected for that specific reason;
+// anything else -- a different error, or a successful parse -- fails the test.
+// A fixture without wantError is expected to parse successfully and merely
+// return the wrong values, so a parse error there is a regression rather than
+// an accepted divergence.
+type knownDivergence struct {
+	// reason explains why jserial and Java disagree.
+	reason string
+
+	// wantError, when set, requires the parse to fail with an error containing
+	// this substring. When empty, the parse must succeed and the recovered
+	// leaves must differ from Java's.
+	wantError string
+}
+
+// knownBroken pins every fixture where jserial disagrees with Java, so that
+// fixing a bug fails this test and forces its entry to be removed.
+var knownBroken = map[string]knownDivergence{
+	"strNul": {
+		reason: "readString does not decode Java modified UTF-8, so NUL arrives as the raw bytes C0 80",
+	},
+	"strEmoji": {
+		reason: "readString does not decode CESU-8, so a supplementary character arrives as two raw 3 byte surrogates",
+	},
+	"strEmojiMixed": {
+		reason: "same CESU-8 decoding gap as strEmoji",
+	},
+	"strLoneHighSurrogate": {
+		reason: "same CESU-8 decoding gap as strEmoji",
+	},
+	"strArrayUnicode": {
+		reason: "array member hits the same CESU-8 decoding gap as strEmoji",
+	},
+	"charSurrogate": {
+		reason: "a char holding half a surrogate pair is converted with string(rune(...)), which yields U+FFFD",
+	},
+	"dateBeyond2262": {
+		reason: "datePostProc multiplies milliseconds by time.Millisecond, overflowing int64 past 2262",
+	},
+	"cycle": {
+		reason: "parseObject fills its object handle only after reading fields, so a back reference into the object being built resolves to nil",
+	},
+	"hashMapIntKeys": {
+		reason:    "a Map<Integer,...> cannot be represented, so it is rejected rather than silently emptied",
+		wantError: "unsupported map key type java.lang.Integer",
+	},
+	"hashSetMixed": {
+		reason:    "a Set with mixed member types cannot be represented, so it is rejected rather than silently shrunk",
+		wantError: "unsupported set member type java.lang.Integer",
+	},
 }
 
 func loadOracleFixtures(t *testing.T) map[string]oracleFixture {
@@ -83,27 +122,52 @@ func TestOracleLeafValues(t *testing.T) {
 				t.Fatalf("decode fixture bytes: %v", err)
 			}
 
+			want := fixture.Leaves
+			divergence, known := knownBroken[name]
+
 			content, err := ParseSerializedObjectMinimal(stream)
+
+			// A fixture pinned to a specific rejection must be rejected for
+			// exactly that reason. An unrelated error is a regression, not a
+			// pass.
+			if known && divergence.wantError != "" {
+				if err == nil {
+					t.Fatalf("fixture is pinned to fail with %q but parsed successfully.\n"+
+						"Remove or update the knownBroken entry. Recorded reason: %s",
+						divergence.wantError, divergence.reason)
+				}
+
+				if !strings.Contains(err.Error(), divergence.wantError) {
+					t.Fatalf("fixture is pinned to fail with %q but failed differently: %v",
+						divergence.wantError, err)
+				}
+
+				t.Logf("known rejection: %s\n  java:    %s\n  jserial: %v",
+					divergence.reason, strings.Join(want, " "), err)
+
+				return
+			}
+
+			// Every other fixture, diverging or not, must parse. A known
+			// value divergence that starts erroring is a regression.
 			if err != nil {
 				t.Fatalf("parse: %v", err)
 			}
 
 			got := collectLeaves(content)
-			want := fixture.Leaves
 
 			matches := reflect.DeepEqual(got, want)
-			reason, broken := knownBroken[name]
 
-			if broken {
+			if known {
 				// Pinned: a known bug must still reproduce, so that fixing it
 				// forces this entry to be removed from knownBroken.
 				if matches {
 					t.Fatalf("fixture is listed in knownBroken but now matches Java.\n"+
-						"Remove the entry. Recorded reason: %s", reason)
+						"Remove the entry. Recorded reason: %s", divergence.reason)
 				}
 
 				t.Logf("known divergence from Java: %s\n  java:    %s\n  jserial: %s",
-					reason, strings.Join(want, " "), strings.Join(got, " "))
+					divergence.reason, strings.Join(want, " "), strings.Join(got, " "))
 
 				return
 			}

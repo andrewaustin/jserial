@@ -381,6 +381,192 @@ func TestNullSuperClassDescriptorIsValid(t *testing.T) {
 	}
 }
 
+// hashMapStreamHex builds a HashMap stream with an arbitrary declared size and
+// an arbitrary run of encoded entries, so the two can be made to disagree.
+func hashMapStreamHex(declaredSizeHex, entries string) string {
+	return streamPrefix + tcClassDesc + encodeStr("java.util.HashMap") + "0507dac1c31660d1" +
+		"03" + "0000" + tcEndBlockData + tcNull +
+		tcBlockData + "08" + "00000010" + declaredSizeHex + entries + tcEndBlockData
+}
+
+// enumMapStreamHex is the equivalent for EnumMap, whose size sits at offset 0.
+func enumMapStreamHex(declaredSizeHex, entries string) string {
+	return streamPrefix + tcClassDesc + encodeStr("java.util.EnumMap") + "065d7df7be907ca1" +
+		"03" + "0000" + tcEndBlockData + tcNull +
+		tcBlockData + "04" + declaredSizeHex + entries + tcEndBlockData
+}
+
+func strPairHex(key, value string) string {
+	return tcString + encodeStr(key) + tcString + encodeStr(value)
+}
+
+// A declared entry count that is negative, or merely not greater than the
+// encoded pair count, used to be accepted and then produce a silently
+// truncated or empty map with a nil error. An empty map is a meaningful value
+// to callers, so it must never stand in for malformed metadata.
+func TestMapEntryCountMustMatchExactly(t *testing.T) {
+	onePair := strPairHex("k", "v")
+	twoPairs := onePair + strPairHex("k2", "v2")
+
+	cases := []struct {
+		name      string
+		sizeHex   string
+		entries   string
+		wantError string
+	}{
+		{"zero declared, none encoded", "00000000", "", ""},
+		{"two declared, two encoded", "00000002", twoPairs, ""},
+		{"zero declared, two encoded", "00000000", twoPairs, "declared 0, encoded 2"},
+		{"one declared, two encoded", "00000001", twoPairs, "declared 1, encoded 2"},
+		{"three declared, two encoded", "00000003", twoPairs, "declared 3, encoded 2"},
+		{"negative declared, none encoded", "ffffffff", "", "negative map size"},
+		{"negative declared, one encoded", "ffffffff", onePair, "negative map size"},
+		{"dangling element", "00000001", onePair + tcString + encodeStr("dangle"),
+			"do not form whole key/value pairs"},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := getErr(hashMapStreamHex(testCase.sizeHex, testCase.entries))
+
+			if testCase.wantError == "" {
+				if err != nil {
+					t.Fatalf("expected a valid map, got: %v", err)
+				}
+
+				return
+			}
+
+			if err == nil {
+				t.Fatal("expected an error for mismatched entry count, got nil")
+			}
+
+			if !strings.Contains(err.Error(), testCase.wantError) {
+				t.Fatalf("expected error containing %q, got: %v", testCase.wantError, err)
+			}
+		})
+	}
+}
+
+// enumMapPostProc carried the identical flaw and gets the identical check.
+func TestEnumMapEntryCountMustMatchExactly(t *testing.T) {
+	cases := []struct {
+		name      string
+		sizeHex   string
+		entries   string
+		wantError string
+	}{
+		{"negative declared", "ffffffff", "", "negative enum map size"},
+		{"zero declared, one encoded", "00000000", strPairHex("k", "v"),
+			"declared 0, encoded 1"},
+		{"two declared, one encoded", "00000002", strPairHex("k", "v"),
+			"declared 2, encoded 1"},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := getErr(enumMapStreamHex(testCase.sizeHex, testCase.entries))
+			if err == nil {
+				t.Fatal("expected an error for mismatched entry count, got nil")
+			}
+
+			if !strings.Contains(err.Error(), testCase.wantError) {
+				t.Fatalf("expected error containing %q, got: %v", testCase.wantError, err)
+			}
+		})
+	}
+}
+
+// arrayListStreamHex builds an ArrayList stream where the `size` field and the
+// element count at the head of the block data can be made to disagree.
+func arrayListStreamHex(sizeFieldHex, declaredHex, elements string) string {
+	return streamPrefix + tcClassDesc + encodeStr("java.util.ArrayList") + "7881d21d99c7619d" +
+		"03" + "0001" + hex.EncodeToString([]byte("I")) + encodeStr("size") +
+		tcEndBlockData + tcNull +
+		sizeFieldHex + tcBlockData + "04" + declaredHex + elements + tcEndBlockData
+}
+
+// ArrayList.writeObject emits the element count twice, as the `size` field and
+// again at the head of its block data. A stream where they disagree is corrupt,
+// and used to decode as a plausible list -- a declared size of 5 with zero
+// encoded elements produced an empty list with a nil error.
+func TestListSizeFieldMustMatchElementCount(t *testing.T) {
+	one := tcString + encodeStr("a")
+	two := one + tcString + encodeStr("b")
+
+	cases := []struct {
+		name      string
+		sizeField string
+		declared  string
+		elements  string
+		wantError bool
+	}{
+		{"empty and consistent", "00000000", "00000000", "", false},
+		{"two and consistent", "00000002", "00000002", two, false},
+		{"field overstates, none encoded", "00000005", "00000000", "", true},
+		{"field understates", "00000000", "00000001", one, true},
+		{"field overstates, one encoded", "00000009", "00000001", one, true},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := getErr(arrayListStreamHex(testCase.sizeField, testCase.declared, testCase.elements))
+
+			if !testCase.wantError {
+				if err != nil {
+					t.Fatalf("expected a valid list, got: %v", err)
+				}
+
+				return
+			}
+
+			if err == nil {
+				t.Fatal("expected an error for a size field that disagrees with the element count, got nil")
+			}
+
+			if !strings.Contains(err.Error(), "does not match encoded element count") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// ArrayDeque uses the same post-processor but declares its fields transient, so
+// it contributes no `size` field. The cross-check must not reject it.
+func TestArrayDequeHasNoSizeFieldToCrossCheck(t *testing.T) {
+	obj, err := ParseSerializedObjectMinimal(objs["arrayDeque"])
+	if err != nil {
+		t.Fatalf("parse arrayDeque: %v", err)
+	}
+
+	expected := []interface{}{"foo", int32(123)}
+	if !reflect.DeepEqual(obj[1], expected) {
+		t.Fatalf("unexpected deque: got %#v, want %#v", obj[1], expected)
+	}
+}
+
+// listPostProc and hashSetPostProc already compare the declared count exactly
+// with len(data) != size+1, which also rejects a negative size. Pin that, so
+// the two never drift toward the looser comparison the pair based handlers had.
+func TestListAndSetSizesRejectNegative(t *testing.T) {
+	setHex := streamPrefix + tcClassDesc + encodeStr("java.util.HashSet") + "ba44859596b8b734" +
+		"03" + "0000" + tcEndBlockData + tcNull +
+		tcBlockData + "0c" + "00000010" + "00000000" + "ffffffff" + tcEndBlockData
+
+	if err := getErr(setHex); err == nil {
+		t.Fatal("expected an error for a negative set size, got nil")
+	}
+
+	listHex := streamPrefix + tcClassDesc + encodeStr("java.util.ArrayList") + "7881d21d99c7619d" +
+		"03" + "0001" + hex.EncodeToString([]byte("I")) + encodeStr("size") +
+		tcEndBlockData + tcNull +
+		"ffffffff" + tcBlockData + "04" + "ffffffff" + tcEndBlockData
+
+	if err := getErr(listHex); err == nil {
+		t.Fatal("expected an error for a negative list size, got nil")
+	}
+}
+
 // A map whose key is a reference to an unassigned handle used to decode as an
 // empty map with no error, so a non-empty serialized map could disappear
 // without any signal to the caller.
@@ -401,6 +587,57 @@ func TestMapWithInvalidReferenceKey(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "invalid reference") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// A set member that is not a string used to be skipped, so a non-empty set
+// could decode as a smaller set, or as an empty one.
+func TestNonStringSetMember(t *testing.T) {
+	// block of capacity, load factor and size 1, then a single null member
+	hexStr := streamPrefix + tcClassDesc + encodeStr("java.util.HashSet") + "ba44859596b8b734" +
+		"03" + "0000" + tcEndBlockData + tcNull +
+		tcBlockData + "0c" + "00000010" + "00000000" + "00000001" +
+		tcNull + tcEndBlockData
+
+	err := getErr(hexStr)
+	if err == nil {
+		t.Fatal("expected an error for a non-string set member, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "unsupported set member type") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// An enum map key that is not an enum constant used to be skipped silently.
+func TestNonEnumEnumMapKey(t *testing.T) {
+	hexStr := streamPrefix + tcClassDesc + encodeStr("java.util.EnumMap") + "065d7df7be907ca1" +
+		"03" + "0000" + tcEndBlockData + tcNull +
+		tcBlockData + "04" + "00000001" +
+		tcString + encodeStr("notanenum") +
+		tcString + encodeStr("somevalue") +
+		tcEndBlockData
+
+	err := getErr(hexStr)
+	if err == nil {
+		t.Fatal("expected an error for a non-enum enum map key, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "unsupported enum map key type") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// The rejected key type must be named by its Java class, not by jserial's
+// internal representation, so the error is actionable from a log line.
+func TestNonStringMapKeyNamesJavaType(t *testing.T) {
+	_, err := ParseSerializedObjectMinimal(objs["hashMapObj"])
+	if err == nil {
+		t.Fatal("expected an error for a non-string map key, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "java.lang.Integer") {
+		t.Fatalf("error should name the Java key type, got: %v", err)
 	}
 }
 
@@ -810,18 +1047,15 @@ func TestDeserializeHashMapWithStrKeys(t *testing.T) {
 }
 
 func TestDeserializeHashMapWithObectKeys(t *testing.T) {
-	obj, err := ParseSerializedObjectMinimal(objs["hashMapObj"])
-	if err != nil || len(obj) != 4 {
-		t.Fail()
+	// A key that is not a string cannot be represented in the decoded map, so
+	// the parse fails instead of dropping the entry. Note that this rejects
+	// the whole stream, including the Integer written after the map.
+	_, err := ParseSerializedObjectMinimal(objs["hashMapObj"])
+	if err == nil {
+		t.Fatal("expected an error for a non-string map key, got nil")
 	}
-	expected := map[string]interface{}{
-		"baz": "bar",
-	}
-	if !reflect.DeepEqual(obj[1], expected) {
-		t.Fail()
-	}
-	if obj[2] != int32(123) {
-		t.Fail()
+	if !strings.Contains(err.Error(), "unsupported map key type") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

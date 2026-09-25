@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"strings"
 	"time"
@@ -1166,9 +1167,67 @@ func listPostProc(fields map[string]interface{}, data []interface{}) (map[string
 		return nil, errors.Errorf("incorrect number of elements: want %d got %d", size, len(data)-1)
 	}
 
+	// ArrayList.writeObject emits the element count twice: once as the `size`
+	// field through defaultWriteObject, and again at the head of its block
+	// data. A legitimate stream always agrees, so a disagreement means
+	// corrupt, tampered or misaligned bytes -- and without this check a
+	// declared size of 5 with zero encoded elements decodes as an empty list
+	// with a nil error.
+	//
+	// ArrayDeque declares its fields transient and so contributes no `size`
+	// field, which is why this only applies when one is present.
+	if declared, hasSize := fields["size"].(int32); hasSize && int(declared) != size {
+		return nil, errors.Errorf("list size field %d does not match encoded element count %d",
+			declared, size)
+	}
+
 	fields["value"] = data[1:]
 
 	return fields, nil
+}
+
+// validatePairCount checks that a declared entry count matches the encoded
+// key/value pairs exactly.
+//
+// The previous check was `size*2+1 > len(data)`, which only rejected an
+// over-declared count. A negative size, or any size below the encoded pair
+// count, passed and then produced a silently truncated or empty map with a nil
+// error. Division is used rather than multiplication so the comparison cannot
+// overflow on a 32-bit int.
+func validatePairCount(kind string, size int, data []interface{}) error {
+	if size < 0 {
+		return errors.Errorf("negative %s size %d", kind, size)
+	}
+
+	if len(data) == 0 {
+		return errors.Errorf("invalid %s data: no elements", kind)
+	}
+
+	elements := len(data) - 1
+	if elements%2 != 0 {
+		return errors.Errorf("incomplete %s entry: %d elements do not form whole key/value pairs",
+			kind, elements)
+	}
+
+	if pairs := elements / 2; size != pairs {
+		return errors.Errorf("incorrect number of %s entries: declared %d, encoded %d",
+			kind, size, pairs)
+	}
+
+	return nil
+}
+
+// describeJavaType names a decoded value's Java class when its descriptor is
+// available, so an error points at the offending Java type rather than at
+// jserial's internal representation of it.
+func describeJavaType(value interface{}) string {
+	if obj, isMap := value.(map[string]interface{}); isMap {
+		if cls, isClazz := obj["class"].(*clazz); isClazz && cls != nil {
+			return cls.name
+		}
+	}
+
+	return fmt.Sprintf("%T", value)
 }
 
 // mapPostProc populates the object value with a map of key/value pairs.
@@ -1178,8 +1237,8 @@ func mapPostProc(fields map[string]interface{}, data []interface{}) (map[string]
 		return nil, err
 	}
 
-	if size*2+1 > len(data) {
-		return nil, errors.Errorf("incorrect number of elements: want %d got %d", size, len(data)-1)
+	if err = validatePairCount("map", size, data); err != nil {
+		return nil, err
 	}
 
 	m := make(map[string]interface{})
@@ -1188,9 +1247,16 @@ func mapPostProc(fields map[string]interface{}, data []interface{}) (map[string]
 		key := data[2*i+1]
 		value := data[2*i+2]
 
-		if s, isString := key.(string); isString {
-			m[s] = value
+		// Skipping a key here would drop the entry entirely, so a map with
+		// unrepresentable keys would decode as an empty map with no error.
+		s, isString := key.(string)
+		if !isString {
+			return nil, errors.Errorf(
+				"unsupported map key type %s at entry %d: only string keys can be represented",
+				describeJavaType(key), i)
 		}
+
+		m[s] = value
 	}
 
 	fields["value"] = m
@@ -1205,8 +1271,8 @@ func enumMapPostProc(fields map[string]interface{}, data []interface{}) (map[str
 		return nil, err
 	}
 
-	if size*2+1 > len(data) {
-		return nil, errors.Errorf("incorrect number of elements: want %d got %d", size, len(data)-1)
+	if err = validatePairCount("enum map", size, data); err != nil {
+		return nil, err
 	}
 
 	m := make(map[string]interface{})
@@ -1215,11 +1281,23 @@ func enumMapPostProc(fields map[string]interface{}, data []interface{}) (map[str
 		key := data[2*i+1]
 		value := data[2*i+2]
 
-		if mk, isMap := key.(map[string]interface{}); isMap {
-			if s, isString := mk["value"].(string); isString {
-				m[s] = value
-			}
+		// An enum constant decodes to a map carrying its name under "value".
+		// Skipping anything else would drop the entry without a signal.
+		mk, isMap := key.(map[string]interface{})
+		if !isMap {
+			return nil, errors.Errorf(
+				"unsupported enum map key type %s at entry %d: expected an enum constant",
+				describeJavaType(key), i)
 		}
+
+		s, isString := mk["value"].(string)
+		if !isString {
+			return nil, errors.Errorf(
+				"invalid enum map key at entry %d: enum constant name is %T, want string",
+				i, mk["value"])
+		}
+
+		m[s] = value
 	}
 
 	fields["value"] = m
@@ -1240,10 +1318,17 @@ func hashSetPostProc(fields map[string]interface{}, data []interface{}) (map[str
 
 	m := make(map[string]bool)
 
-	for _, key := range data[1:] {
-		if s, isString := key.(string); isString {
-			m[s] = true
+	for i, member := range data[1:] {
+		// Skipping a member here would shrink the set silently, so a
+		// non-empty set could decode as a smaller one, or as empty.
+		s, isString := member.(string)
+		if !isString {
+			return nil, errors.Errorf(
+				"unsupported set member type %s at index %d: only string members can be represented",
+				describeJavaType(member), i)
 		}
+
+		m[s] = true
 	}
 
 	fields["value"] = m
