@@ -195,6 +195,148 @@ func TestWrongHashSetSize(t *testing.T) {
 	}
 }
 
+// An empty class descriptor name used to be accepted silently, because the
+// validation wrapped a nil error. Accepting it also skipped the newHandle
+// call, desyncing every later reference in the stream.
+func TestEmptyClassName(t *testing.T) {
+	hexStr := streamMagic + streamVersion + tcObject + tcClassDesc + encodeStr("") + serialVer +
+		scSerializable + "0000" + tcEndBlockData + tcNull
+
+	err := getErr(hexStr)
+	if err == nil {
+		t.Fatal("expected an error for an empty class name, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "invalid class name") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// A one character class name such as "X" is valid Java and must be accepted.
+// Only an empty name is rejected.
+func TestSingleCharacterClassNameIsValid(t *testing.T) {
+	hexStr := streamMagic + streamVersion + tcObject + tcClassDesc + encodeStr("X") + serialVer +
+		scSerializable + "0001" + hex.EncodeToString([]byte("I")) + fooEnc + tcEndBlockData + tcNull + "0000002a"
+
+	obj, err := ParseSerializedObjectMinimal(mustDecodeHex(t, hexStr))
+	if err != nil {
+		t.Fatalf("a one character class name must parse: %v", err)
+	}
+
+	expected := map[string]interface{}{"foo": int32(42)}
+	if !reflect.DeepEqual(obj[0], expected) {
+		t.Fatalf("unexpected object: got %#v, want %#v", obj[0], expected)
+	}
+}
+
+// mustDecodeHex decodes a hex encoded stream for tests that need the parsed
+// value rather than just the error.
+func mustDecodeHex(t *testing.T, hexStr string) []byte {
+	t.Helper()
+
+	decoded, err := hex.DecodeString(hexStr)
+	if err != nil {
+		t.Fatalf("decode hex stream: %v", err)
+	}
+
+	return decoded
+}
+
+// assertParseError runs one parse entry point and requires it to fail with a
+// message containing want.
+func assertParseError(t *testing.T, api, want string, parse func() error) {
+	t.Helper()
+
+	err := parse()
+	if err == nil {
+		t.Fatalf("%s: expected an error, got nil", api)
+	}
+
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("%s: expected error containing %q, got: %v", api, want, err)
+	}
+}
+
+// A TC_NULL class descriptor is only meaningful in the superclass position.
+// Anywhere else it used to yield a plausible looking value with a nil error:
+// an object became {}, which is indistinguishable from a genuinely empty map;
+// an array became nil; an enum became its bare constant name; and a class
+// handed back a typed nil *clazz, leaking an unexported type to the caller.
+func TestNullClassDescriptorRejected(t *testing.T) {
+	cases := []struct {
+		name      string
+		hexStr    string
+		wantError string
+	}{
+		{
+			"object",
+			streamMagic + streamVersion + tcObject + tcNull,
+			"object class descriptor is null",
+		},
+		{
+			"array",
+			streamMagic + streamVersion + tcArray + tcNull + "00000003",
+			"array class descriptor is null",
+		},
+		{
+			"enum",
+			streamMagic + streamVersion + tcEnum + tcNull + tcString + encodeStr("ONE"),
+			"enum class descriptor is null",
+		},
+		{
+			"class",
+			streamMagic + streamVersion + tcClass + tcNull,
+			"class descriptor is null",
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			stream := mustDecodeHex(t, testCase.hexStr)
+
+			assertParseError(t, "ParseSerializedObjectMinimal", testCase.wantError, func() error {
+				_, err := ParseSerializedObjectMinimal(stream)
+
+				return err
+			})
+
+			assertParseError(t, "ParseSerializedObject", testCase.wantError, func() error {
+				_, err := ParseSerializedObject(stream)
+
+				return err
+			})
+
+			assertParseError(t, "stream ParseSerializedObjectMinimal", testCase.wantError, func() error {
+				sop := NewSerializedObjectParser(bytes.NewReader(stream), SetMaxDataBlockSize(len(stream)))
+				_, err := sop.ParseSerializedObjectMinimal()
+
+				return err
+			})
+
+			assertParseError(t, "stream ParseSerializedObject", testCase.wantError, func() error {
+				sop := NewSerializedObjectParser(bytes.NewReader(stream), SetMaxDataBlockSize(len(stream)))
+				_, err := sop.ParseSerializedObject()
+
+				return err
+			})
+		})
+	}
+}
+
+// The legitimate use of TC_NULL in the classDesc position is the superclass of
+// a class at the top of its hierarchy. The checks above must not reject it.
+func TestNullSuperClassDescriptorIsValid(t *testing.T) {
+	obj, err := ParseSerializedObjectMinimal(mustDecodeHex(t, streamHex("flags", scSerializable)))
+	if err != nil {
+		t.Fatalf("a null superclass descriptor must parse: %v", err)
+	}
+
+	expected := map[string]interface{}{"foo": int32(0x01234567)}
+	if !reflect.DeepEqual(obj[0], expected) {
+		t.Fatalf("unexpected object: got %#v, want %#v", obj[0], expected)
+	}
+}
+
 // -------------------------------- //
 // -- Begin Positive Tests Cases -- //
 // -------------------------------- //
