@@ -750,9 +750,14 @@ func parseReference(sop *SerializedObjectParser) (ref interface{}, err error) {
 	const refIDMask = 0x7e0000
 	i := int(refIdx - refIDMask)
 
-	if i > -1 && i < len(sop.handles) {
-		ref = sop.handles[i]
+	if i < 0 || i >= len(sop.handles) {
+		err = errors.Errorf("invalid reference %#x: handle %d out of range, %d assigned",
+			refIdx, i, len(sop.handles))
+
+		return
 	}
+
+	ref = sop.handles[i]
 
 	return
 }
@@ -790,13 +795,21 @@ func parseArray(sop *SerializedObjectParser) (arr interface{}, err error) {
 
 	res["length"] = size
 
-	if cls == nil {
+	// An array class name is a JVM type descriptor such as "[B" or "[[I", so
+	// it must have a '[' prefix and an element type after it. Without this
+	// check a descriptor like "[" or "X" indexes past the end of the name.
+	const minArrayClassNameLength = 2
+	if len(cls.name) < minArrayClassNameLength || cls.name[0] != '[' {
+		err = errors.Errorf("invalid array class name: '%s'", cls.name)
+
 		return
 	}
 
-	primHandler, exists := primitiveHandlers[string(cls.name[1])]
+	elementType := string(cls.name[1])
+
+	primHandler, exists := primitiveHandlers[elementType]
 	if !exists {
-		err = errors.Errorf("unknown field type '%s'", string(cls.name[1]))
+		err = errors.Errorf("unknown field type '%s'", elementType)
 
 		return
 	}
