@@ -229,6 +229,25 @@ func TestSingleCharacterClassNameIsValid(t *testing.T) {
 	}
 }
 
+// parseArray indexes the second byte of the class name to find the element
+// type, so a descriptor that is too short or lacks the '[' prefix must error
+// rather than panic.
+func TestInvalidArrayClassName(t *testing.T) {
+	for _, name := range []string{"[", "X", "Xy"} {
+		hexStr := streamMagic + streamVersion + tcArray + tcClassDesc + encodeStr(name) +
+			serialVer + scSerializable + "0000" + tcEndBlockData + tcNull + "00000000"
+
+		err := getErr(hexStr)
+		if err == nil {
+			t.Fatalf("expected an error for array class name %q, got nil", name)
+		}
+
+		if !strings.Contains(err.Error(), "invalid array class name") {
+			t.Fatalf("unexpected error for array class name %q: %v", name, err)
+		}
+	}
+}
+
 // mustDecodeHex decodes a hex encoded stream for tests that need the parsed
 // value rather than just the error.
 func mustDecodeHex(t *testing.T, hexStr string) []byte {
@@ -240,6 +259,31 @@ func mustDecodeHex(t *testing.T, hexStr string) []byte {
 	}
 
 	return decoded
+}
+
+// A reference to a handle that was never assigned used to yield a nil object
+// with no error, which is indistinguishable from a legitimately null field.
+func TestInvalidReferenceHandle(t *testing.T) {
+	err := getErr(streamMagic + streamVersion + tcReference + "7e00ffff")
+	if err == nil {
+		t.Fatal("expected an error for an out-of-range reference, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "invalid reference") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// A reference below the base wire handle is equally invalid.
+func TestReferenceBelowBaseHandle(t *testing.T) {
+	err := getErr(streamMagic + streamVersion + tcReference + "00000000")
+	if err == nil {
+		t.Fatal("expected an error for a reference below the base handle, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "invalid reference") {
+		t.Fatalf("unexpected error: %v", err)
+	}
 }
 
 // assertParseError runs one parse entry point and requires it to fail with a
@@ -334,6 +378,46 @@ func TestNullSuperClassDescriptorIsValid(t *testing.T) {
 	expected := map[string]interface{}{"foo": int32(0x01234567)}
 	if !reflect.DeepEqual(obj[0], expected) {
 		t.Fatalf("unexpected object: got %#v, want %#v", obj[0], expected)
+	}
+}
+
+// A map whose key is a reference to an unassigned handle used to decode as an
+// empty map with no error, so a non-empty serialized map could disappear
+// without any signal to the caller.
+func TestMapWithInvalidReferenceKey(t *testing.T) {
+	// flags 03 is SC_SERIALIZABLE|SC_WRITE_METHOD as a single byte, then a
+	// block of bucket count and size 1, then one key/value pair.
+	hexStr := streamPrefix + tcClassDesc + encodeStr("java.util.HashMap") + "0507dac1c31660d1" +
+		"03" + "0000" + tcEndBlockData + tcNull +
+		tcBlockData + "08" + "00000010" + "00000001" +
+		tcReference + "7e00ffff" +
+		tcString + encodeStr("somevalue") +
+		tcEndBlockData
+
+	err := getErr(hexStr)
+	if err == nil {
+		t.Fatal("expected an error for a map key referencing an unassigned handle, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "invalid reference") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// Valid back references must keep working: the dupe fixture writes the same
+// object three times and relies on the handle table resolving them.
+func TestValidReferencesStillResolve(t *testing.T) {
+	obj, err := ParseSerializedObjectMinimal(objs["dupe"])
+	if err != nil {
+		t.Fatalf("parse dupe: %v", err)
+	}
+
+	if len(obj) != 5 {
+		t.Fatalf("unexpected object count: got %d, want 5", len(obj))
+	}
+
+	if !reflect.DeepEqual(obj[1], obj[3]) {
+		t.Fatalf("reference did not resolve to the same value: %#v vs %#v", obj[1], obj[3])
 	}
 }
 
